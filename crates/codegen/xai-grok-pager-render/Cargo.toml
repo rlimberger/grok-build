@@ -93,7 +93,7 @@ url = { workspace = true }
 # Hot-reload config (dev mode)
 notify = { workspace = true, optional = true }
 # theme/omarchy.rs: the Omarchy desktop palette and its change watch
-omarchy-theme = { version = "0.1", features = ["tokio"] }
+omarchy-themes = { version = "0.1", features = ["tokio"] }
 
 # libc: poll/read for non-blocking terminal reads in theme/osc11.rs.
 [target.'cfg(unix)'.dependencies]
