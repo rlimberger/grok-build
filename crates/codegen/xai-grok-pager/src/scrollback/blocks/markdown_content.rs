@@ -15,7 +15,8 @@ use super::quote_bar::QuoteBarStrip;
 
 pub(crate) const MARKDOWN_BODY_RANGE: u16 = 0;
 use crate::syntax::get_syntect;
-use crate::theme::{ThemeKind, cache as theme_cache, md_style};
+use crate::theme::cache::{self as theme_cache, ThemeStamp};
+use crate::theme::md_style;
 use xai_grok_markdown::StreamingMarkdownRenderer;
 
 /// Mutable rendering state behind a single `RefCell`.
@@ -28,7 +29,7 @@ struct RenderState {
     /// Cached word-wrap result keyed on `(width, generation, theme)`.
     cache_width: usize,
     cache_generation: u64,
-    cache_theme: ThemeKind,
+    cache_theme: ThemeStamp,
     cache_lines: Vec<Line<'static>>,
     cache_joiners: Vec<Option<String>>,
     /// Number of pre-wrap (renderer output) lines that were frozen at the time we last wrapped.
@@ -102,7 +103,7 @@ impl MarkdownContent {
                 renderer,
                 cache_width: 0,
                 cache_generation: 0,
-                cache_theme: theme_cache::current_kind(),
+                cache_theme: theme_cache::stamp(),
                 cache_lines: Vec::new(),
                 cache_joiners: Vec::new(),
                 frozen_pre_wrap_count: 0,
@@ -120,7 +121,7 @@ impl MarkdownContent {
                 renderer: StreamingMarkdownRenderer::new(md_style::style(), true),
                 cache_width: 0,
                 cache_generation: 0,
-                cache_theme: theme_cache::current_kind(),
+                cache_theme: theme_cache::stamp(),
                 cache_lines: Vec::new(),
                 cache_joiners: Vec::new(),
                 frozen_pre_wrap_count: 0,
@@ -292,7 +293,7 @@ impl MarkdownContent {
     /// This turns streaming from O(N^2) total wrapping to ~O(N).
     fn ensure_wrapped(&self, width: usize) {
         let mut state = self.state.borrow_mut();
-        let current_theme = theme_cache::current_kind();
+        let current_theme = theme_cache::stamp();
 
         // If the theme changed, update the renderer's style so the re-render below picks up the new colors
         // Resetting cache_generation forces the cache to rebuild even if width and content haven't changed

@@ -13,6 +13,7 @@ pub mod env_appearance;
 mod grokday;
 mod groknight;
 pub mod md_style;
+pub mod omarchy;
 pub mod osc11;
 mod oscura;
 mod rosepine;
@@ -264,6 +265,8 @@ impl Theme {
             // Auto is resolved to a concrete theme before being stored; if reached, fall back to GrokNight
             ThemeKind::Auto => Self::groknight(),
         };
+        // `[ui] theme = "omarchy"`: the desktop palette replaces the built-in one
+        let base = omarchy::palette().unwrap_or(base);
         // Sample polarity before quantizing
         // After quantization `bg_base` may land on a named or indexed entry whose luminance depends on the host palette
         let dark = base.is_dark();

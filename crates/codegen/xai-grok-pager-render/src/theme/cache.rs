@@ -73,6 +73,22 @@ pub fn current_kind() -> ThemeKind {
     theme_kind_from_u8(CURRENT.load(Ordering::Relaxed))
 }
 
+/// Identity of the palette in effect: the kind plus the Omarchy overlay generation.
+/// Render caches key on this rather than on the kind alone so a palette change under the same kind re-bakes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ThemeStamp {
+    pub kind: ThemeKind,
+    pub generation: u64,
+}
+
+#[must_use]
+pub fn stamp() -> ThemeStamp {
+    ThemeStamp {
+        kind: current_kind(),
+        generation: super::omarchy::generation(),
+    }
+}
+
 /// Set the in-memory theme kind without writing to disk.
 ///
 /// Used by the dispatcher (after `Action::SetTheme` is processed) and by the live-preview path during the picker.
@@ -225,8 +241,11 @@ fn load_from_disk() -> Option<ThemeKind> {
         .and_then(|ui| ui.get("theme"))
         .and_then(|v| v.as_str())
         // Fallback: top-level `theme` key (legacy)
-        .or_else(|| table.get("theme").and_then(|v| v.as_str()));
-    value.and_then(ThemeKind::from_name)
+        .or_else(|| table.get("theme").and_then(|v| v.as_str()))?;
+    if super::omarchy::is_name(value) {
+        return Some(super::omarchy::enable());
+    }
+    ThemeKind::from_name(value)
 }
 
 /// Reads `[ui].auto_dark_theme` and `[ui].auto_light_theme` from the effective config, parsing them as theme names.
@@ -263,6 +282,7 @@ pub fn reset_for_test() {
     AUTO_MODE.store(false, Ordering::Relaxed);
     set_terminal_native_lock(false);
     *AUTO_THEME_CONFIG.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    super::omarchy::reset_for_test();
 }
 
 /// Seed `AUTO_THEME_CONFIG` with explicit defaults so `auto_theme_config()` never falls through to `load_auto_theme_config()`.

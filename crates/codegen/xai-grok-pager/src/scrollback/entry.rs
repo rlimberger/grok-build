@@ -6,13 +6,14 @@ use chrono::{DateTime, Local};
 use super::block::{BlockContent, RenderBlock};
 use super::types::{BlockContext, BlockOutput, DisplayMode, RenderedBlockOutput};
 use crate::appearance::AppearanceConfig;
-use crate::theme::{ThemeKind, cache as theme_cache};
+use crate::theme::ThemeKind;
+use crate::theme::cache::{self as theme_cache, ThemeStamp};
 
 #[derive(Debug, Clone)]
 struct CachedOutput {
     width: u16,
     raw: bool,
-    theme: ThemeKind,
+    theme: ThemeStamp,
     is_selected: bool,
     cwd: Option<PathBuf>,
     rendered: RenderedBlockOutput,
@@ -359,7 +360,7 @@ impl ScrollbackEntry {
                 || self.block.is_bg_task()
                 || self.block.is_subagent());
 
-        let current_theme = theme_cache::current_kind();
+        let current_theme = theme_cache::stamp();
         let cwd_key = cwd.map(|p| p.to_path_buf());
         {
             let cache = self.cached_output.borrow();

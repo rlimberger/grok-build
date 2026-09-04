@@ -2197,6 +2197,8 @@ pub(crate) async fn run(
     debug_assert_eq!(term_state.initial_theme, theme_cache::current_kind());
     let mut appearance_watcher =
         SystemAppearanceWatcher::start_if_auto(theme_cache::is_auto_mode());
+    // `[ui] theme = "omarchy"`: retint when Omarchy swaps its theme directory (see theme::omarchy)
+    let mut omarchy_watcher = crate::theme::omarchy::Watcher::start();
 
     // Registered so the signal handler can request a graceful quit; see signal_handler.
     let quit_notify = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -2924,6 +2926,23 @@ pub(crate) async fn run(
                         );
                         presenter.request(false);
                     }
+                }
+            }
+
+            // Omarchy touched its theme directory: re-read the palette and retint if it changed
+            changed = async {
+                match omarchy_watcher.as_mut() {
+                    Some(w) => w.changed().await,
+                    None => std::future::pending::<Result<(), _>>().await,
+                }
+            } => {
+                if changed.is_err() {
+                    // Watcher thread is gone; stop selecting on a closed channel
+                    omarchy_watcher = None;
+                } else if crate::theme::omarchy::reload() {
+                    let effective = Theme::apply_kind(crate::theme::omarchy::base_kind());
+                    tracing::info!(theme = %effective.display_name(), "omarchy theme changed, retinting");
+                    presenter.request(false);
                 }
             }
 

@@ -90,8 +90,8 @@ shellexpand = "3.1"
 # Parsing
 url = { workspace = true }
 
-# Hot-reload config (dev mode)
-notify = { workspace = true, optional = true }
+# theme/omarchy.rs: inotify watch on Omarchy's theme directory
+notify = { workspace = true }
 
 # libc: poll/read for non-blocking terminal reads in theme/osc11.rs.
 [target.'cfg(unix)'.dependencies]
