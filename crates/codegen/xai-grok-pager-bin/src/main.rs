@@ -2367,8 +2367,15 @@ async fn async_main(args: PagerArgs) -> Result<()> {
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
     let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    // Same rule as the stdio agent: a binary that is not `<grok_home>/bin/grok` (a local build) cannot adopt a staged update,
+    // so neither the restart hint nor the background download applies to it
     let bg_update_rx: Option<tokio::sync::oneshot::Receiver<Option<auto_update::UpdateAvailable>>> =
-        if should_check_for_updates(args.no_auto_update) {
+        if should_check_for_updates(args.no_auto_update)
+            && is_managed_install(
+                std::env::current_exe().ok(),
+                &xai_grok_shell::util::grok_home::grok_home(),
+            )
+        {
             let update_config = update_config.clone();
             let wait_slot = bg_update_wait.clone();
             let (tx, rx) = tokio::sync::oneshot::channel();
