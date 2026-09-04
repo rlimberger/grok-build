@@ -41,7 +41,7 @@ pub(crate) fn cli_base_urls() -> Vec<String> {
 
 /// Parsed, not prefix-matched: `http://127.0.0.1:9@evil.com` starts with a
 /// loopback prefix but its host is `evil.com` (userinfo trick).
-fn is_loopback_base(base: &str) -> bool {
+pub(crate) fn is_loopback_base(base: &str) -> bool {
     let Ok(u) = url::Url::parse(base) else {
         return false;
     };

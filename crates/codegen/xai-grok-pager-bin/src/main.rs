@@ -2367,37 +2367,52 @@ async fn async_main(args: PagerArgs) -> Result<()> {
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
     let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));
-    // Same rule as the stdio agent: a binary that is not `<grok_home>/bin/grok` (a local build) cannot adopt a staged update,
-    // so neither the restart hint nor the background download applies to it
+    // Managed installs (`<grok_home>/bin/grok`) check the release channel and can
+    // adopt a staged download. Source builds (grok-omarchy) cannot, but still nag
+    // when xai-org/grok-build's CHANGELOG is ahead of the running release.
+    let managed_install = is_managed_install(
+        std::env::current_exe().ok(),
+        &xai_grok_shell::util::grok_home::grok_home(),
+    );
     let bg_update_rx: Option<tokio::sync::oneshot::Receiver<Option<auto_update::UpdateAvailable>>> =
-        if should_check_for_updates(args.no_auto_update)
-            && is_managed_install(
-                std::env::current_exe().ok(),
-                &xai_grok_shell::util::grok_home::grok_home(),
-            )
-        {
-            let update_config = update_config.clone();
-            let wait_slot = bg_update_wait.clone();
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            tokio::spawn(async move {
-                let check = auto_update::check_update_background(&update_config).await;
-                if let Some(mut child) = check.download {
-                    *wait_slot.lock().await = Some(tokio::spawn(async move { child.wait().await }));
-                }
-                let _ = tx.send(check.update);
-            });
-            Some(rx)
-        } else {
-            None
+        match background_update_source(
+            should_check_for_updates(args.no_auto_update),
+            managed_install,
+        ) {
+            BackgroundUpdateSource::None => None,
+            source => {
+                let update_config = update_config.clone();
+                let wait_slot = bg_update_wait.clone();
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                tokio::spawn(async move {
+                    let check = match source {
+                        BackgroundUpdateSource::ManagedChannel => {
+                            auto_update::check_update_background(&update_config).await
+                        }
+                        BackgroundUpdateSource::OsRepo => {
+                            auto_update::BackgroundUpdateCheck::hint_only(
+                                xai_grok_update::os_repo::check_os_repo_update().await,
+                            )
+                        }
+                        BackgroundUpdateSource::None => unreachable!(),
+                    };
+                    if let Some(mut child) = check.download {
+                        *wait_slot.lock().await =
+                            Some(tokio::spawn(async move { child.wait().await }));
+                    }
+                    let _ = tx.send(check.update);
+                });
+                Some(rx)
+            }
         };
     let result = xai_grok_pager::app::run(args, bg_update_rx).await;
     xai_grok_sandbox::flush();
     match result {
         Ok(true) => {
             let adopted = bg_update_wait.lock().await.take();
-            if finish_update_on_exit(adopted, &update_config).await {
+            if finish_update_on_exit(adopted, &update_config, managed_install).await {
                 eprintln!("Update installed. Run `grok` to start.");
-            } else {
+            } else if managed_install {
                 eprintln!("Update did not complete. Run `grok update` to retry.");
             }
             Ok(())
@@ -2417,7 +2432,15 @@ async fn async_main(args: PagerArgs) -> Result<()> {
 async fn finish_update_on_exit(
     adopted: Option<tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>>,
     update_config: &UpdateConfig,
+    managed_install: bool,
 ) -> bool {
+    if !managed_install {
+        eprintln!(
+            "This binary is built from https://github.com/xai-org/grok-build and cannot adopt a staged update.\n\
+             A newer grok-build is available. In grok-omarchy, run scripts/rebase.sh and restart grok-omarchy."
+        );
+        return false;
+    }
     let run_blocking = |reason: Option<String>| async move {
         if let Some(reason) = reason {
             eprintln!("{reason}");
@@ -2479,6 +2502,27 @@ fn build_update_config() -> UpdateConfig {
     }
     config
 }
+/// Where the interactive TUI should look for an update nag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundUpdateSource {
+    None,
+    ManagedChannel,
+    OsRepo,
+}
+
+fn background_update_source(
+    updates_enabled: bool,
+    managed_install: bool,
+) -> BackgroundUpdateSource {
+    if !updates_enabled {
+        BackgroundUpdateSource::None
+    } else if managed_install {
+        BackgroundUpdateSource::ManagedChannel
+    } else {
+        BackgroundUpdateSource::OsRepo
+    }
+}
+
 /// Central gate for auto-update checks; add new suppression rules here, not at call sites.
 fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
     if cfg!(debug_assertions) {
@@ -3006,6 +3050,25 @@ mod tests {
         assert!(
             !stdio_auto_update_enabled(true, false, true, false),
             "pinned binary"
+        );
+    }
+    #[test]
+    fn background_update_source_uses_os_repo_for_unmanaged_builds() {
+        assert_eq!(
+            background_update_source(false, true),
+            BackgroundUpdateSource::None
+        );
+        assert_eq!(
+            background_update_source(false, false),
+            BackgroundUpdateSource::None
+        );
+        assert_eq!(
+            background_update_source(true, true),
+            BackgroundUpdateSource::ManagedChannel
+        );
+        assert_eq!(
+            background_update_source(true, false),
+            BackgroundUpdateSource::OsRepo
         );
     }
     use clap::Parser as _;

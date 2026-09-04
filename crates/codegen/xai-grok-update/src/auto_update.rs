@@ -569,6 +569,15 @@ impl BackgroundUpdateCheck {
             download: None,
         }
     }
+
+    /// Restart hint without a staged download. Used by unmanaged source builds
+    /// that check the OS repo instead of a release channel.
+    pub fn hint_only(update: Option<UpdateAvailable>) -> Self {
+        Self {
+            update,
+            download: None,
+        }
+    }
 }
 
 /// Check for available updates without blocking the TUI startup.
