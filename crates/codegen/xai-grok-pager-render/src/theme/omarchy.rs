@@ -5,7 +5,8 @@
 //! swaps the whole `theme` directory in atomically.
 //! With `[ui] theme = "omarchy"` the pager reads that file at startup, lays its
 //! `[colors]` over the built-in theme that matches its `base` polarity, and re-reads
-//! it whenever the `current` directory changes (inotify via `notify`).
+//! it whenever the `current` directory changes. Locating the state directory, reading
+//! the rendered file and the inotify watch come from the `omarchy-theme` crate.
 //! A running session therefore retints at the same moment as Ghostty and the other
 //! native Omarchy apps, without a hook, a signal, or a poll.
 //!
@@ -19,18 +20,18 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use notify::Watcher as _;
+use omarchy_theme::{Omarchy, Subscription};
 use ratatui::style::Color;
-use tokio::sync::watch;
 
 use super::{Theme, ThemeKind};
 
 /// The `[ui].theme` value that turns this mode on.
 pub const NAME: &str = "omarchy";
+/// The file Omarchy renders from `~/.config/omarchy/themed/grok.toml.tpl`.
+const THEME_FILE: &str = "grok.toml";
 
 /// Set by [`enable`] when the config names [`NAME`]; never cleared outside tests.
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -64,16 +65,11 @@ pub fn is_enabled() -> bool {
 
 /// Omarchy's `current` state directory.
 /// `GROK_OMARCHY_STATE_DIR` overrides it so a session can be pointed at a scratch copy.
-#[must_use]
-pub fn state_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("GROK_OMARCHY_STATE_DIR") {
-        return Some(PathBuf::from(dir));
+fn omarchy() -> Option<Omarchy> {
+    match std::env::var_os("GROK_OMARCHY_STATE_DIR") {
+        Some(dir) => Some(Omarchy::at(dir)),
+        None => Omarchy::detect(),
     }
-    Some(xai_dirs::home_dir()?.join(".local/state/omarchy/current"))
-}
-
-fn theme_file() -> Option<PathBuf> {
-    state_dir().map(|dir| dir.join("theme/grok.toml"))
 }
 
 /// Turn omarchy mode on and load the palette. Returns the base kind to render under.
@@ -111,21 +107,21 @@ pub fn reload() -> bool {
     if !is_enabled() {
         return false;
     }
-    theme_file().is_some_and(|path| reload_from(&path))
+    match omarchy().map(|o| o.read_theme_file(THEME_FILE)) {
+        Some(Ok(text)) => apply_text(&text),
+        Some(Err(error)) => {
+            tracing::debug!(%error, "omarchy theme file unreadable; keeping palette");
+            false
+        }
+        None => false,
+    }
 }
 
-fn reload_from(path: &Path) -> bool {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) => {
-            tracing::debug!(path = %path.display(), %error, "omarchy theme file unreadable; keeping palette");
-            return false;
-        }
-    };
-    let overlay = match parse(&text) {
+fn apply_text(text: &str) -> bool {
+    let overlay = match parse(text) {
         Ok(overlay) => overlay,
         Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "omarchy theme file malformed; keeping palette");
+            tracing::warn!(%error, "omarchy theme file malformed; keeping palette");
             return false;
         }
     };
@@ -247,13 +243,9 @@ fn slot_mut<'a>(t: &'a mut Theme, key: &str) -> Option<&'a mut Color> {
 }
 
 /// Wakes the event loop whenever Omarchy touches its `current` directory.
-///
-/// Omarchy removes `current/theme` and moves the freshly rendered directory into
-/// its place, so the watch sits on the parent, which survives the swap.
 /// Every event is a wake-up; [`reload`] decides whether the palette really changed.
 pub struct Watcher {
-    rx: watch::Receiver<u64>,
-    _inner: notify::RecommendedWatcher,
+    subscription: Subscription,
 }
 
 impl Watcher {
@@ -264,29 +256,21 @@ impl Watcher {
         if !is_enabled() {
             return None;
         }
-        let dir = state_dir()?;
-        let (tx, rx) = watch::channel(0u64);
-        let mut inner = notify::recommended_watcher(
-            move |result: notify::Result<notify::Event>| match result {
-                Ok(event) if !event.kind.is_access() => tx.send_modify(|n| *n += 1),
-                Ok(_) => {}
-                Err(error) => tracing::warn!(%error, "omarchy theme watch error"),
-            },
-        )
-        .inspect_err(|error| tracing::warn!(%error, "omarchy theme watch unavailable"))
-        .ok()?;
-        inner
-            .watch(&dir, notify::RecursiveMode::NonRecursive)
-            .inspect_err(|error| {
-                tracing::warn!(dir = %dir.display(), %error, "omarchy theme watch unavailable");
-            })
-            .ok()?;
-        tracing::info!(dir = %dir.display(), "watching omarchy theme directory");
-        Some(Self { rx, _inner: inner })
+        let omarchy = omarchy()?;
+        match omarchy.subscribe() {
+            Ok(subscription) => {
+                tracing::info!(dir = %omarchy.current_dir().display(), "watching omarchy theme directory");
+                Some(Self { subscription })
+            }
+            Err(error) => {
+                tracing::warn!(%error, "omarchy theme watch unavailable");
+                None
+            }
+        }
     }
 
-    pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
-        self.rx.changed().await
+    pub async fn changed(&mut self) -> Result<(), tokio::sync::watch::error::RecvError> {
+        self.subscription.changed().await
     }
 }
 
@@ -330,33 +314,28 @@ mod tests {
     }
 
     #[test]
-    fn reload_from_bumps_generation_only_on_change() {
+    fn apply_text_bumps_generation_only_on_change() {
         let _guard = super::super::cache::test_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         reset_for_test();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("grok.toml");
         let before = generation();
 
-        assert!(!reload_from(&path), "missing file keeps the palette");
-        assert!(palette().is_none());
-
-        std::fs::write(&path, "[colors]\nbg_base = \"#010203\"\n").unwrap();
-        assert!(reload_from(&path));
+        assert!(apply_text("[colors]\nbg_base = \"#010203\"\n"));
         assert_eq!(generation(), before + 1);
         assert_eq!(palette().unwrap().bg_base, Color::Rgb(1, 2, 3));
 
-        assert!(!reload_from(&path), "identical content is not a change");
+        assert!(
+            !apply_text("[colors]\nbg_base = \"#010203\"\n"),
+            "identical content is not a change"
+        );
         assert_eq!(generation(), before + 1);
 
-        std::fs::write(&path, "base = \"light\"\n").unwrap();
-        assert!(reload_from(&path));
+        assert!(apply_text("base = \"light\"\n"));
         assert_eq!(base_kind(), ThemeKind::GrokDay);
         assert_eq!(generation(), before + 2);
 
-        std::fs::write(&path, "base = [").unwrap();
-        assert!(!reload_from(&path), "malformed file keeps the palette");
+        assert!(!apply_text("base = ["), "malformed text keeps the palette");
         assert_eq!(base_kind(), ThemeKind::GrokDay);
         reset_for_test();
     }

@@ -90,8 +90,10 @@ shellexpand = "3.1"
 # Parsing
 url = { workspace = true }
 
-# theme/omarchy.rs: inotify watch on Omarchy's theme directory
-notify = { workspace = true }
+# Hot-reload config (dev mode)
+notify = { workspace = true, optional = true }
+# theme/omarchy.rs: the Omarchy desktop palette and its change watch
+omarchy-theme = { version = "0.1", features = ["tokio"] }
 
 # libc: poll/read for non-blocking terminal reads in theme/osc11.rs.
 [target.'cfg(unix)'.dependencies]
